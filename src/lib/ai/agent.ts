@@ -1,159 +1,126 @@
-import { askOllama } from "./ollama";
-import { searchSpareParts } from "../tools/spare-parts";
+import { chatWithOllama } from "./ollama";
+import { searchSpareParts } from "@/lib/tools/searchSpareParts";
 
-type AgentDecision = {
-  action: "searchSpareParts" | "final_answer";
-  arguments?: {
-    brand?: string;
-    model?: string;
-    year?: number;
-    partName?: string;
-  };
-  answer?: string;
+type SearchIntent = {
+  brand?: string;
+  model?: string;
+  year?: number;
+  partName?: string;
 };
 
-export async function runAgent(
+function extractJson(text: string) {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+
+  if (start === -1 || end === -1) {
+    throw new Error("AI did not return valid JSON");
+  }
+
+  return text.slice(start, end + 1);
+}
+
+export async function runSupplierAgent(
   userMessage: string
 ) {
-  const prompt = `
-You are an AI agent for a car supplier price inquiry system.
+    // Step 1: Ask Llama to understand the request
+    const extractionPrompt = `
+    You are an AI assistant for a car spare parts supplier system.
 
-You have access to the following tool:
+    Extract the following information from the user's request:
 
-TOOL:
-searchSpareParts
+    - brand
+    - model
+    - year
+    - partName
 
-DESCRIPTION:
-Search supplier spare-part prices using:
-- car brand
-- car model
-- car year
-- spare part name
+    Return ONLY valid JSON.
 
-You must decide what action to take.
+    Example:
 
-If the user is asking for a spare part price and enough information is available,
-return this JSON:
+    {
+      "brand": "Toyota",
+      "model": "Camry",
+      "year": 2020,
+      "partName": "Brake Pads"
+    }
 
-{
-  "action": "searchSpareParts",
-  "arguments": {
-    "brand": "Toyota",
-    "model": "Camry",
-    "year": 2018,
-    "partName": "Front Brake Pads"
-  }
-}
+    If a value is not provided, use null.
 
-If you cannot identify enough information,
-return:
+    User request:
+    ${userMessage}
+  `;
 
-{
-  "action": "final_answer",
-  "answer": "Please provide the car brand, model, year and spare part."
-}
+  const aiResponse = await chatWithOllama([
+    {
+      role: "system",
+      content:
+        "You extract structured car spare part search parameters.",
+    },
+    {
+      role: "user",
+      content: extractionPrompt,
+    },
+  ]);
 
-USER REQUEST:
-${userMessage}
-`;
+  const json = extractJson(aiResponse);
 
-  const aiResponse =
-    await askOllama(prompt);
+  const intent =
+    JSON.parse(json) as SearchIntent;
 
-  let decision: AgentDecision;
+  // Step 2: Call our real database search tool
+  const results = await searchSpareParts({
+    brand: intent.brand,
+    model: intent.model,
+    year: intent.year,
+    partName: intent.partName,
+  });
 
-  try {
-    decision =
-      JSON.parse(aiResponse);
-  } catch {
-    return {
-      type: "error",
-      message:
-        "The AI returned invalid JSON.",
-      rawResponse: aiResponse,
-    };
-  }
-
-  if (
-    decision.action ===
-    "final_answer"
-  ) {
-    return {
-      type: "final_answer",
-      answer:
-        decision.answer ||
-        "I need more information.",
-    };
-  }
-
-  if (
-  decision.action ===
-  "searchSpareParts"
-  ) {
-    const results =
-      searchSpareParts({
-        brand:
-          decision.arguments?.brand,
-        model:
-          decision.arguments?.model,
-        year:
-          decision.arguments?.year,
-        partName:
-          decision.arguments?.partName,
-      });
-
-    const finalAnswer =
-      await generateFinalAnswer(
-        userMessage,
-        results
-      );
-
-    return {
-      type: "final_answer",
-      answer: finalAnswer,
-      query: decision.arguments,
-      results,
-    };
-  }
-
-  return {
-    type: "error",
-    message:
-      "Unknown agent action.",
-  };
-}
-
-async function generateFinalAnswer(
-  userMessage: string,
-  toolResults: unknown
-  ) {
-    const prompt = `
-    You are a helpful supplier price inquiry assistant.
+  // Step 3: Ask Llama to summarize the results
+      const summaryPrompt = `
+    You are a helpful supplier price assistant.
 
     The user asked:
 
-    ${userMessage}
+    "${userMessage}"
 
-    You searched the supplier database.
+    The database search parameters were:
 
-    Here are the results:
+    ${JSON.stringify(intent, null, 2)}
 
-    ${JSON.stringify(
-      toolResults,
-      null,
-      2
-    )}
+    The database returned these supplier results:
 
-  Now provide a clear answer to the user.
+    ${JSON.stringify(results, null, 2)}
 
-  Rules:
+    Give the user a concise and useful answer.
 
-  1. Mention the matching spare parts.
-  2. Mention suppliers and prices.
-  3. Identify the cheapest option.
-  4. Do not invent information.
-  5. If there are no results, clearly say that no matching spare parts were found.
+    Mention:
+    - The matching vehicle
+    - The spare part
+    - Available suppliers
+    - Supplier prices
+    - The cheapest option
+
+    If there are no results, clearly tell the user that no matching supplier price was found.
+
+    Do not invent any information.
+    Only use the database results provided above.
   `;
 
-  return await askOllama(prompt);
+  const finalResponse = await chatWithOllama([
+    {
+      role: "system",
+      content:
+        "You summarize supplier database search results accurately.",
+    },
+    {
+      role: "user",
+      content: summaryPrompt,
+    },
+  ]);
+
+  return {
+    intent,
+    results,
+    response: finalResponse,
+  };
 }

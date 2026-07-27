@@ -1,29 +1,31 @@
-const OLLAMA_URL = "http://localhost:11434";
+const OLLAMA_URL = "http://localhost:11434/api/chat";
 
-const MODEL_NAME = "llama3.2:3b";
-
-type OllamaResponse = {
-  response: string;
+type OllamaMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
 };
 
-export async function askOllama(
-  prompt: string
-): Promise<string> {
-  const response = await fetch(
-    `${OLLAMA_URL}/api/generate`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: MODEL_NAME,
-        prompt,
-        stream: false,
-        format: "json",
-      }),
-    }
-  );
+type OllamaResponse = {
+  message: {
+    role: string;
+    content: string;
+  };
+};
+
+export async function chatWithOllama(
+  messages: OllamaMessage[]
+) {
+  const response = await fetch(OLLAMA_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "llama3.2:3b",
+      messages,
+      stream: false,
+    }),
+  });
 
   if (!response.ok) {
     throw new Error(
@@ -31,8 +33,8 @@ export async function askOllama(
     );
   }
 
-  const data: OllamaResponse =
-    await response.json();
+  const data =
+    (await response.json()) as OllamaResponse;
 
-  return data.response;
+  return data.message.content;
 }

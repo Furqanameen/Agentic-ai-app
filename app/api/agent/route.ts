@@ -1,13 +1,16 @@
-import { NextRequest, NextResponse } from "next/server";
-import { runAgent } from "@/src/lib/ai/agent";
+import { NextResponse } from "next/server";
+import { runSupplierAgent } from "@/lib/ai/agent";
 
-export async function POST(request: NextRequest) {
+export async function POST(request: Request) {
   try {
     const body = await request.json();
 
     const message = body.message;
 
-    if (!message || typeof message !== "string") {
+    if (
+      !message ||
+      typeof message !== "string"
+    ) {
       return NextResponse.json(
         {
           error: "Message is required",
@@ -18,15 +21,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const result = await runAgent(message);
+    const result =
+      await runSupplierAgent(message);
 
     return NextResponse.json(result);
   } catch (error) {
-    console.error("Agent error:", error);
+    console.error(
+      "Agent API error:",
+      error
+    );
 
     return NextResponse.json(
       {
-        error: "Agent failed to process request",
+        error:
+          "Something went wrong while processing your request.",
       },
       {
         status: 500,
