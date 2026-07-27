@@ -1,0 +1,85 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model CarBrand {
+  id        Int        @id @default(autoincrement())
+  name      String     @unique
+  models    CarModel[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model CarModel {
+  id        Int        @id @default(autoincrement())
+  name      String
+  brandId   Int
+  brand     CarBrand   @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  variants  CarVariant[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@unique([brandId, name])
+}
+
+model CarVariant {
+  id        Int        @id @default(autoincrement())
+  modelId   Int
+  year      Int
+  name      String?
+  model     CarModel   @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  prices    SupplierPartPrice[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@unique([modelId, year, name])
+}
+
+model SparePart {
+  id          Int        @id @default(autoincrement())
+  name        String
+  partNumber  String?
+  category    String?
+  prices      SupplierPartPrice[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([name])
+  @@index([partNumber])
+}
+
+model Supplier {
+  id          Int        @id @default(autoincrement())
+  name        String     @unique
+  contactName String?
+  phone       String?
+  email       String?
+  prices      SupplierPartPrice[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+model SupplierPartPrice {
+  id          Int        @id @default(autoincrement())
+  variantId   Int
+  sparePartId Int
+  supplierId  Int
+  price       Decimal    @db.Decimal(10, 2)
+  currency    String     @default("GBP")
+  available   Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  variant     CarVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  sparePart   SparePart  @relation(fields: [sparePartId], references: [id], onDelete: Cascade)
+  supplier    Supplier   @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@unique([variantId, sparePartId, supplierId])
+  @@index([variantId, sparePartId])
+  @@index([sparePartId])
+  @@index([supplierId])
+}
