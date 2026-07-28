@@ -1,11 +1,17 @@
+
 import { chatWithOllama } from "./ollama";
 import { searchSpareParts } from "@/lib/tools/searchSpareParts";
 
+type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
 type SearchIntent = {
-  brand?: string;
-  model?: string;
-  year?: number;
-  partName?: string;
+  brand?: string | null;
+  model?: string | null;
+  year?: number | null;
+  partName?: string | null;
 };
 
 function extractJson(text: string) {
@@ -20,41 +26,70 @@ function extractJson(text: string) {
 }
 
 export async function runSupplierAgent(
-  userMessage: string
+  messages: ChatMessage[]
 ) {
-    // Step 1: Ask Llama to understand the request
-    const extractionPrompt = `
-    You are an AI assistant for a car spare parts supplier system.
+  const conversation = messages
+    .map(
+      (message) =>
+        `${message.role}: ${message.content}`
+    )
+    .join("\n");
 
-    Extract the following information from the user's request:
+  // Step 1: Ask Llama to understand the full conversation
+  const extractionPrompt = `
+      You are an AI assistant for a car spare parts supplier system.
 
-    - brand
-    - model
-    - year
-    - partName
+      Read the complete conversation below.
 
-    Return ONLY valid JSON.
+      Extract the following information needed to search the supplier database:
 
-    Example:
+      - brand
+      - model
+      - year
+      - partName
 
-    {
-      "brand": "Toyota",
-      "model": "Camry",
-      "year": 2020,
-      "partName": "Brake Pads"
-    }
+      IMPORTANT:
+      Use information from the entire conversation.
 
-    If a value is not provided, use null.
+      If the user provided information in an earlier message
+      and provides missing information in a later message,
+      combine the information together.
 
-    User request:
-    ${userMessage}
-  `;
+      For example:
+
+      User:
+      Find brake pads for Toyota Camry.
+
+      Assistant:
+      What year is the Toyota Camry?
+
+      User:
+      2020
+
+      The extracted result should be:
+
+      {
+        "brand": "Toyota",
+        "model": "Camry",
+        "year": 2020,
+        "partName": "Brake Pads"
+      }
+
+      Return ONLY valid JSON.
+
+      If a value is genuinely not available in the conversation,
+      use null.
+
+      Conversation:
+
+      ${conversation}
+      `;
 
   const aiResponse = await chatWithOllama([
     {
       role: "system",
       content:
-        "You extract structured car spare part search parameters.",
+        "You extract structured car spare part search parameters from conversation history.",
     },
     {
       role: "user",
@@ -67,7 +102,33 @@ export async function runSupplierAgent(
   const intent =
     JSON.parse(json) as SearchIntent;
 
-  // Step 2: Call our real database search tool
+  // Step 2: Check whether we have enough information
+  if (
+    !intent.brand ||
+    !intent.model ||
+    !intent.year ||
+    !intent.partName
+  ) {
+    let missingField = "";
+
+    if (!intent.brand) {
+      missingField = "car brand";
+    } else if (!intent.model) {
+      missingField = "car model";
+    } else if (!intent.year) {
+      missingField = "vehicle year";
+    } else if (!intent.partName) {
+      missingField = "spare part";
+    }
+
+    return {
+      intent,
+      results: [],
+      response: `Could you please provide the ${missingField}?`,
+    };
+  }
+
+  // Step 3: Search the real database
   const results = await searchSpareParts({
     brand: intent.brand,
     model: intent.model,
@@ -75,42 +136,44 @@ export async function runSupplierAgent(
     partName: intent.partName,
   });
 
-  // Step 3: Ask Llama to summarize the results
-      const summaryPrompt = `
-    You are a helpful supplier price assistant.
+  // Step 4: Ask Llama to summarize the database results
+  const summaryPrompt = `
+                        You are a helpful supplier price assistant.
 
-    The user asked:
+                        The user conversation was:
 
-    "${userMessage}"
+                        ${conversation}
 
-    The database search parameters were:
+                        The extracted search parameters were:
 
-    ${JSON.stringify(intent, null, 2)}
+                        ${JSON.stringify(intent, null, 2)}
 
-    The database returned these supplier results:
+                        The database returned these supplier results:
 
-    ${JSON.stringify(results, null, 2)}
+                        ${JSON.stringify(results, null, 2)}
 
-    Give the user a concise and useful answer.
+                        Give the user a concise and useful answer.
 
-    Mention:
-    - The matching vehicle
-    - The spare part
-    - Available suppliers
-    - Supplier prices
-    - The cheapest option
+                        Mention:
+                        - The matching vehicle
+                        - The spare part
+                        - Available suppliers
+                        - Supplier prices
+                        - The cheapest option
 
-    If there are no results, clearly tell the user that no matching supplier price was found.
+                        If there are no results, clearly tell the user
+                        that no matching supplier price was found.
 
-    Do not invent any information.
-    Only use the database results provided above.
-  `;
+                        Do not invent any information.
+
+                        Only use the database results provided above.
+                        `;
 
   const finalResponse = await chatWithOllama([
     {
       role: "system",
       content:
-        "You summarize supplier database search results accurately.",
+        "You summarize supplier database search results accurately without inventing information.",
     },
     {
       role: "user",
@@ -124,3 +187,4 @@ export async function runSupplierAgent(
     response: finalResponse,
   };
 }
+

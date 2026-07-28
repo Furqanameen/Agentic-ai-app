@@ -41,7 +41,13 @@ export default function SupplierAgentChat() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          message: trimmedMessage,
+          messages: [
+            ...messages,
+            {
+              role: "user",
+              content: trimmedMessage,
+            },
+          ],
         }),
       });
 

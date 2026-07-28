@@ -1,19 +1,30 @@
 import { NextResponse } from "next/server";
 import { runSupplierAgent } from "@/lib/ai/agent";
 
+type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+type AgentRequest = {
+  messages: ChatMessage[];
+};
+
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
+    const body =
+      (await request.json()) as AgentRequest;
 
-    const message = body.message;
+    const { messages } = body;
 
     if (
-      !message ||
-      typeof message !== "string"
+      !messages ||
+      !Array.isArray(messages) ||
+      messages.length === 0
     ) {
       return NextResponse.json(
         {
-          error: "Message is required",
+          error: "Messages are required",
         },
         {
           status: 400,
@@ -22,7 +33,7 @@ export async function POST(request: Request) {
     }
 
     const result =
-      await runSupplierAgent(message);
+      await runSupplierAgent(messages);
 
     return NextResponse.json(result);
   } catch (error) {
