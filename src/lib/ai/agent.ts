@@ -1,5 +1,6 @@
 
 import { chatWithOllama } from "./ollama";
+import { chatWithGroq } from "./groq";
 import { searchSpareParts } from "@/lib/tools/searchSpareParts";
 
 type ChatMessage = {
@@ -85,7 +86,7 @@ export async function runSupplierAgent(
       ${conversation}
       `;
 
-  const aiResponse = await chatWithOllama([
+  const aiResponse = await chatWithGroq([
     {
       role: "system",
       content:
@@ -169,7 +170,7 @@ export async function runSupplierAgent(
                         Only use the database results provided above.
                         `;
 
-  const finalResponse = await chatWithOllama([
+  const finalResponse = await chatWithGroq([
     {
       role: "system",
       content:
