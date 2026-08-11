@@ -1,5 +1,4 @@
 
-import { chatWithOllama } from "./ollama";
 import { chatWithGroq } from "./groq";
 import { searchSpareParts } from "@/lib/tools/searchSpareParts";
 
@@ -26,6 +25,14 @@ function extractJson(text: string) {
   return text.slice(start, end + 1);
 }
 
+function getLatestUserMessage(messages: ChatMessage[]) {
+  const userMessages = messages.filter(
+    (message) => message.role === "user"
+  );
+
+  return userMessages[userMessages.length - 1]?.content || "";
+}
+
 export async function runSupplierAgent(
   messages: ChatMessage[]
 ) {
@@ -36,61 +43,168 @@ export async function runSupplierAgent(
     )
     .join("\n");
 
-  // Step 1: Ask Llama to understand the full conversation
+  const latestUserMessage =
+    getLatestUserMessage(messages);
+
+  /*
+   * STEP 1
+   *
+   * Extract the search intent.
+   *
+   * IMPORTANT:
+   * The latest user message has priority.
+   *
+   * Previous messages may be used to fill information
+   * that is genuinely missing from the latest request.
+   *
+   * Example:
+   *
+   * Previous:
+   * Toyota Camry 2020
+   *
+   * Latest:
+   * Find mirror
+   *
+   * Result:
+   * Toyota / Camry / 2020 / Mirror
+   *
+   * NOT:
+   * Toyota / Camry / 2020 / Brake Pads
+   */
+
   const extractionPrompt = `
-      You are an AI assistant for a car spare parts supplier system.
+    You are an AI assistant for a car spare parts supplier system.
 
-      Read the complete conversation below.
+    Your job is to determine the CURRENT search intent from the conversation.
 
-      Extract the following information needed to search the supplier database:
+    There are four fields:
 
-      - brand
-      - model
-      - year
-      - partName
+    - brand
+    - model
+    - year
+    - partName
 
-      IMPORTANT:
-      Use information from the entire conversation.
+    IMPORTANT RULES:
 
-      If the user provided information in an earlier message
-      and provides missing information in a later message,
-      combine the information together.
+    1. The LATEST USER MESSAGE has the highest priority.
 
-      For example:
+    2. If the latest user message explicitly changes a field,
+       use the new value.
 
-      User:
-      Find brake pads for Toyota Camry.
+    3. NEVER keep an old partName if the latest user message
+       asks for a different part.
 
-      Assistant:
-      What year is the Toyota Camry?
+    4. If the latest user message says something like:
+       "find mirror"
+       "find pads"
+       "I need a clutch"
+       "what about headlights"
 
-      User:
-      2020
+       then that new part becomes the current partName.
 
-      The extracted result should be:
+    5. Previous conversation may be used to fill fields that
+       are not changed by the latest user message.
 
-      {
-        "brand": "Toyota",
-        "model": "Camry",
-        "year": 2020,
-        "partName": "Brake Pads"
-      }
+    6. Assistant messages are NOT user-provided facts.
+       Do not treat an assistant question as a new search value.
 
-      Return ONLY valid JSON.
+    7. Short follow-up answers should use the existing context.
 
-      If a value is genuinely not available in the conversation,
-      use null.
+    Example:
 
-      Conversation:
+    User:
+    Find Toyota brake pads
 
-      ${conversation}
-      `;
+    Assistant:
+    Could you please provide the car model?
+
+    User:
+    Camry
+
+    Assistant:
+    Could you please provide the vehicle year?
+
+    User:
+    2020
+
+    Current intent:
+
+    {
+      "brand": "Toyota",
+      "model": "Camry",
+      "year": 2020,
+      "partName": "Brake Pads"
+    }
+
+    Another example:
+
+    Previous conversation:
+
+    User:
+    Find Toyota Camry 2020 brake pads
+
+    Latest user message:
+
+    User:
+    Find mirror
+
+    Current intent MUST be:
+
+    {
+      "brand": "Toyota",
+      "model": "Camry",
+      "year": 2020,
+      "partName": "Mirror"
+    }
+
+    NOT:
+
+    {
+      "brand": "Toyota",
+      "model": "Camry",
+      "year": 2020,
+      "partName": "Brake Pads"
+    }
+
+    Another example:
+
+    Previous conversation:
+
+    Toyota Camry 2020 brake pads
+
+    Latest user message:
+
+    Find Honda Civic clutch
+
+    Current intent MUST be:
+
+    {
+      "brand": "Honda",
+      "model": "Civic",
+      "year": null,
+      "partName": "Clutch"
+    }
+
+    Do not blindly copy previous values.
+
+    Return ONLY valid JSON.
+
+    Use null when a value is genuinely unavailable.
+
+    Previous conversation:
+
+    ${conversation}
+
+    LATEST USER MESSAGE:
+
+    ${latestUserMessage}
+    `;
 
   const aiResponse = await chatWithGroq([
     {
       role: "system",
       content:
-        "You extract structured car spare part search parameters from conversation history.",
+        "You extract the current structured spare-part search intent accurately.",
     },
     {
       role: "user",
@@ -103,7 +217,13 @@ export async function runSupplierAgent(
   const intent =
     JSON.parse(json) as SearchIntent;
 
-  // Step 2: Check whether we have enough information
+  /*
+   * STEP 2
+   *
+   * Check whether enough information exists
+   * to perform a database search.
+   */
+
   if (
     !intent.brand ||
     !intent.model ||
@@ -129,7 +249,12 @@ export async function runSupplierAgent(
     };
   }
 
-  // Step 3: Search the real database
+  /*
+   * STEP 3
+   *
+   * Search the real PostgreSQL database.
+   */
+
   const results = await searchSpareParts({
     brand: intent.brand,
     model: intent.model,
@@ -137,44 +262,95 @@ export async function runSupplierAgent(
     partName: intent.partName,
   });
 
-  // Step 4: Ask Llama to summarize the database results
+  /*
+   * STEP 4
+   *
+   * IMPORTANT:
+   * If the database returns nothing, do NOT ask the LLM
+   * to invent or reinterpret previous results.
+   */
+
+  if (results.length === 0) {
+    return {
+      intent,
+      results: [],
+      response:
+        `I couldn't find any matching supplier price for ` +
+        `${intent.brand} ${intent.model} ${intent.year} ${intent.partName}.`,
+    };
+  }
+
+  /*
+   * STEP 5
+   *
+   * Determine the cheapest available supplier
+   * from the actual database results.
+   */
+
+  const availableResults = results.filter(
+    (result) => result.available
+  );
+
+  const cheapest =
+    availableResults.length > 0
+      ? availableResults.reduce((lowest, current) =>
+          Number(current.price) <
+          Number(lowest.price)
+            ? current
+            : lowest
+        )
+      : null;
+
+  /*
+   * STEP 6
+   *
+   * Ask Groq only to communicate the database results.
+   *
+   * It must NOT calculate or invent prices.
+   */
+
   const summaryPrompt = `
-                        You are a helpful supplier price assistant.
+        You are a helpful supplier price assistant.
 
-                        The user conversation was:
+        The user is searching for:
 
-                        ${conversation}
+        ${JSON.stringify(intent, null, 2)}
 
-                        The extracted search parameters were:
+        The database returned these results:
 
-                        ${JSON.stringify(intent, null, 2)}
+        ${JSON.stringify(results, null, 2)}
 
-                        The database returned these supplier results:
+        The cheapest available supplier calculated directly
+        from the database is:
 
-                        ${JSON.stringify(results, null, 2)}
+        ${JSON.stringify(cheapest, null, 2)}
 
-                        Give the user a concise and useful answer.
+        Give the user a concise answer.
 
-                        Mention:
-                        - The matching vehicle
-                        - The spare part
-                        - Available suppliers
-                        - Supplier prices
-                        - The cheapest option
+        Mention:
 
-                        If there are no results, clearly tell the user
-                        that no matching supplier price was found.
+        - Matching vehicle
+        - Spare part
+        - Available suppliers
+        - Supplier prices
+        - Cheapest available option
 
-                        Do not invent any information.
+        IMPORTANT:
 
-                        Only use the database results provided above.
-                        `;
+        - Only use information from the database results.
+        - Do not invent suppliers.
+        - Do not invent prices.
+        - Do not reuse results from previous searches.
+        - Do not mention previous searches unless necessary.
+        - Do not say a previous part was found.
+        - If the cheapest supplier is provided above, use it.
+      `;
 
   const finalResponse = await chatWithGroq([
     {
       role: "system",
       content:
-        "You summarize supplier database search results accurately without inventing information.",
+        "You summarize the current database search results accurately.",
     },
     {
       role: "user",
@@ -188,4 +364,3 @@ export async function runSupplierAgent(
     response: finalResponse,
   };
 }
-

@@ -1,3 +1,4 @@
+
 import { NextResponse } from "next/server";
 import { runSupplierAgent } from "@/lib/ai/agent";
 
@@ -15,16 +16,32 @@ export async function POST(request: Request) {
     const body =
       (await request.json()) as AgentRequest;
 
-    const { messages } = body;
-
     if (
-      !messages ||
-      !Array.isArray(messages) ||
-      messages.length === 0
+      !body.messages ||
+      !Array.isArray(body.messages)
     ) {
       return NextResponse.json(
         {
-          error: "Messages are required",
+          error: "messages array is required",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const messages = body.messages.filter(
+      (message) =>
+        (message.role === "user" ||
+          message.role === "assistant") &&
+        typeof message.content === "string" &&
+        message.content.trim().length > 0
+    );
+
+    if (messages.length === 0) {
+      return NextResponse.json(
+        {
+          error: "At least one message is required",
         },
         {
           status: 400,
@@ -53,3 +70,4 @@ export async function POST(request: Request) {
     );
   }
 }
+
